@@ -1,3 +1,3 @@
 # EPUB画像とりだし
 
-EPUBの中の画像を、読む順に並べて取り出すツールです。処理はすべてブラウザ内で行われ、ファイルはどこにも送信されません。
+移動しました → https://cork-tools.github.io/epub-image-extractor/
