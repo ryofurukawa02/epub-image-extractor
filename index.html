@@ -1,0 +1,707 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+</head>
+<body>
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>EPUB画像とりだし</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700;900&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* レイアウト: 上に投入口、下に本ごとの棚。1冊=見出し行＋寸法サマリー＋読み順のコマ割りグリッド */
+:root {
+  --bg: #f3f5f8;
+  --surface: #ffffff;
+  --ink: #16202e;
+  --ink-soft: #5a677a;
+  --line: #d5dbe4;
+  --accent: #1f4fa8;
+  --accent-ink: #ffffff;
+  --accent-wash: #e6edf9;
+  --warn: #a2540a;
+  --warn-wash: #fbefdd;
+  --font-body: "Zen Kaku Gothic New", "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #10151d; --surface: #19212c; --ink: #e8edf4; --ink-soft: #97a4b6; --line: #2e3a4a;
+    --accent: #7ea6f2; --accent-ink: #0d1420; --accent-wash: #1d2b45; --warn: #f0b266; --warn-wash: #3a2a14;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #10151d; --surface: #19212c; --ink: #e8edf4; --ink-soft: #97a4b6; --line: #2e3a4a;
+  --accent: #7ea6f2; --accent-ink: #0d1420; --accent-wash: #1d2b45; --warn: #f0b266; --warn-wash: #3a2a14;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+img { max-width: 100%; }
+body {
+  margin: 0;
+  background: var(--bg); color: var(--ink);
+  font-family: var(--font-body); font-size: 15px; line-height: 1.7;
+  padding-block: 28px 64px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.wrap { max-width: 1080px; margin: 0 auto; display: flex; flex-direction: column; gap: 24px; }
+header h1 { font-size: 26px; font-weight: 900; line-height: 1.3; margin: 0; letter-spacing: .01em; }
+header p { margin: 6px 0 0; color: var(--ink-soft); max-width: 40em; }
+
+.drop {
+  border: 2px dashed var(--line); border-radius: 6px; background: var(--surface);
+  padding: 36px 20px; display: flex; flex-direction: column; align-items: center; gap: 12px; text-align: center;
+  transition: border-color .15s, background .15s;
+}
+.drop.over { border-color: var(--accent); background: var(--accent-wash); }
+.drop strong { font-size: 18px; font-weight: 700; }
+.drop small { color: var(--ink-soft); font-size: 13px; }
+
+button, .btn {
+  font: inherit; font-weight: 700; cursor: pointer; border-radius: 4px;
+  border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink);
+  padding: 8px 18px; line-height: 1.4;
+}
+button.ghost { background: transparent; color: var(--accent); }
+button:disabled { opacity: .5; cursor: default; }
+button:focus-visible, .thumb:focus-visible, select:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; }
+
+.opts { display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: center; font-size: 14px; }
+.opts label { display: flex; gap: 8px; align-items: center; }
+select { font: inherit; padding: 5px 8px; border-radius: 4px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+
+.book { border-top: 3px solid var(--ink); padding-top: 14px; display: flex; flex-direction: column; gap: 12px; }
+.book-head { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: flex-start; justify-content: space-between; }
+.book-head h2 { font-size: 18px; font-weight: 700; margin: 0; min-width: 0; overflow-wrap: anywhere; text-wrap: balance; flex: 1 1 260px; }
+.book-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.facts { display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 0; font-size: 13px; color: var(--ink-soft); }
+.facts div { display: flex; gap: 8px; align-items: baseline; }
+.facts dt { font-weight: 500; }
+.facts dd { margin: 0; color: var(--ink); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.note { font-size: 13px; padding: 8px 12px; border-radius: 4px; background: var(--warn-wash); color: var(--warn); }
+.status { font-size: 13px; color: var(--ink-soft); min-height: 1.7em; }
+.status.err { color: var(--warn); }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 10px; direction: ltr; }
+.thumb {
+  font: inherit; text-align: left; padding: 0; border: 1px solid var(--line); border-radius: 3px;
+  background: var(--surface); color: var(--ink); overflow: hidden; display: flex; flex-direction: column; min-width: 0;
+}
+.thumb:hover { border-color: var(--accent); }
+.cell { position: relative; min-width: 0; display: flex; }
+.cell .thumb { flex: 1 1 auto; width: 100%; }
+.cell.on .thumb { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+.pick { position: absolute; top: 4px; left: 4px; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; background: var(--surface); border: 1px solid var(--line); border-radius: 4px; cursor: pointer; }
+.pick input { width: 17px; height: 17px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.selbar { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; font-size: 13px; color: var(--ink-soft); }
+.selbar button { padding: 4px 12px; font-size: 13px; }
+.pv-pick { display: flex; gap: 8px; align-items: center; font-weight: 700; }
+.pv-pick input { width: 17px; height: 17px; margin: 0; accent-color: var(--accent); }
+.thumb .pic { aspect-ratio: 5 / 7; background: var(--bg); display: block; width: 100%; }
+.thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.thumb .cap { padding: 4px 6px 5px; font-family: var(--font-mono); font-size: 11px; line-height: 1.35; font-weight: 400; display: flex; flex-direction: column; min-width: 0; }
+.thumb .cap b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thumb .cap span { color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+.more { align-self: flex-start; }
+dialog#pv { border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); padding: 16px; width: 100%; max-width: min(980px, calc(100vw - 24px)); max-height: calc(100vh - 24px); }
+dialog#pv::backdrop { background: rgba(8, 12, 20, .6); }
+.pv-head { display: flex; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.pv-head strong { min-width: 0; overflow-wrap: anywhere; font-family: var(--font-mono); font-weight: 500; font-size: 13px; }
+.pv-body { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+.pv-stage { position: relative; display: inline-block; overflow: hidden; line-height: 0; background: var(--bg); border: 1px solid var(--line); flex: 0 1 auto; max-width: 100%; touch-action: none; user-select: none; }
+.pv-stage img { display: block; max-width: 100%; max-height: min(72vh, 760px); width: auto; height: auto; -webkit-user-drag: none; }
+.pv-crop { position: absolute; box-sizing: border-box; outline: 2px solid var(--accent); box-shadow: 0 0 0 9999px rgba(8, 12, 20, .6); }
+.pv-crop span { position: absolute; touch-action: none; }
+.pv-crop span::after { content: ""; position: absolute; background: var(--accent); border-radius: 3px; }
+.pv-crop .t, .pv-crop .b { left: 0; right: 0; height: 22px; cursor: ns-resize; }
+.pv-crop .l, .pv-crop .r { top: 0; bottom: 0; width: 22px; cursor: ew-resize; }
+.pv-crop .t { top: -11px; } .pv-crop .b { bottom: -11px; } .pv-crop .l { left: -11px; } .pv-crop .r { right: -11px; }
+.pv-crop .t::after, .pv-crop .b::after { left: 50%; top: 8px; width: 48px; height: 6px; margin-left: -24px; }
+.pv-crop .l::after, .pv-crop .r::after { top: 50%; left: 8px; height: 48px; width: 6px; margin-top: -24px; }
+.pv-side { flex: 1 1 230px; min-width: 0; display: flex; flex-direction: column; gap: 12px; font-size: 14px; }
+.pv-side p { margin: 0; }
+.pv-dims { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 13px; }
+.pv-side fieldset { border: 1px solid var(--line); border-radius: 4px; padding: 8px 12px 12px; margin: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+.pv-side legend { font-size: 13px; color: var(--ink-soft); padding: 0 4px; }
+.pv-side fieldset label { display: flex; flex-direction: column; font-size: 13px; color: var(--ink-soft); }
+.pv-side input[type=number] { font: inherit; font-family: var(--font-mono); padding: 4px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); color: var(--ink); width: 100%; min-width: 0; }
+.pv-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.pv-row button { padding: 6px 12px; font-size: 13px; }
+.pv-msg { font-size: 13px; color: var(--ink-soft); min-height: 1.7em; }
+footer { color: var(--ink-soft); font-size: 13px; border-top: 1px solid var(--line); padding-top: 12px; }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>EPUB画像とりだし</h1>
+    <p>EPUBを入れると、中の画像を読む順に並べて取り出します。ファイルはこの端末の中だけで処理され、どこにも送信されません。</p>
+  </header>
+
+  <div class="note" id="nosave" hidden>この表示では、画像の確認まではできますが保存ができません（サインインしていない場合や、社外のアカウントで開いた場合）。保存するには、配布している「EPUB画像とりだし」のHTMLファイル版を使ってください。</div>
+
+  <div class="drop" id="drop">
+    <strong>ここにEPUBをドロップ</strong>
+    <small>複数まとめて入れられます（.epub）</small>
+    <label class="btn" for="file">ファイルを選ぶ</label>
+    <input type="file" id="file" accept=".epub,application/epub+zip" multiple>
+  </div>
+
+  <div class="opts">
+    <label for="naming">保存するファイル名
+      <select id="naming">
+        <option value="seq">読む順の連番（001.jpg、002.jpg…）</option>
+        <option value="orig">EPUB内の元の名前のまま</option>
+      </select>
+    </label>
+    <label for="trim">余白
+      <select id="trim">
+        <option value="none">切らない（ページそのまま）</option>
+        <option value="tb" selected>上下の白い余白を切る（全ページ同じ幅）</option>
+        <option value="all">上下左右の白い余白を切る（全ページ同じ幅）</option>
+      </select>
+    </label>
+    <label for="ignoresmall"><input type="checkbox" id="ignoresmall" checked> ページ番号など小さな文字も余白として切る</label>
+    <label for="onlyjpg"><input type="checkbox" id="onlyjpg"> JPGだけにする（PNGなどを除く）</label>
+  </div>
+
+  <div class="status" id="status" role="status" aria-live="polite"></div>
+  <div id="books" style="display:flex;flex-direction:column;gap:32px"></div>
+
+  <footer>並び順はEPUBの綴じ順（spine）どおりです。余白を切らない場合は再圧縮せず、EPUBに入っているデータをそのまま取り出します。余白を切る場合は、その本の標準的な余白の幅を全ページ共通で切り、切った画像だけ保存し直します。絵が余白にはみ出しているページは絵の手前まで、紙の端まで絵がある断ち切りページは切りません。コマ左上のチェックで選んだページだけを保存できます。コマを押すとプレビューが開き、切る位置の調整と1枚だけの保存ができます。</footer>
+</div>
+
+<dialog id="pv" aria-labelledby="pvTitle">
+  <div class="pv-head"><strong id="pvTitle"></strong><button type="button" class="ghost" id="pvClose">閉じる</button></div>
+  <div class="pv-body">
+    <div class="pv-stage" id="pvStage"><img id="pvImg" alt="元のページ"><div class="pv-crop" id="pvCrop"><span class="t" data-e="t"></span><span class="b" data-e="b"></span><span class="l" data-e="l"></span><span class="r" data-e="r"></span></div></div>
+    <div class="pv-side">
+      <p class="pv-dims" id="pvDims"></p>
+      <p id="pvHelp">青い枠の内側が保存されます。枠の辺をドラッグするか、下の数字で切る幅を調整できます。</p>
+      <fieldset id="pvCut"><legend>切る幅（px）</legend>
+        <label for="pvT">上<input type="number" id="pvT" min="0" step="1" inputmode="numeric"></label>
+        <label for="pvB">下<input type="number" id="pvB" min="0" step="1" inputmode="numeric"></label>
+        <label for="pvL">左<input type="number" id="pvL" min="0" step="1" inputmode="numeric"></label>
+        <label for="pvR">右<input type="number" id="pvR" min="0" step="1" inputmode="numeric"></label>
+      </fieldset>
+      <label class="pv-pick" for="pvPick"><input type="checkbox" id="pvPick"> このページを選ぶ（選んだページだけまとめて保存できます）</label>
+      <div class="pv-row" id="pvOne">
+        <button type="button" class="ghost" id="pvAuto">自動に戻す</button>
+        <button type="button" class="ghost" id="pvFull">このページは切らない</button>
+      </div>
+      <div class="pv-row" id="pvMany">
+        <button type="button" class="ghost" id="pvAll">全ページをこの位置で切る</button>
+        <button type="button" class="ghost" id="pvAllAuto">全ページを自動に戻す</button>
+      </div>
+      <div class="pv-row">
+        <button type="button" class="ghost" id="pvPrev">前のページ</button>
+        <button type="button" class="ghost" id="pvNext">次のページ</button>
+        <button type="button" id="pvSave">この1枚を保存</button>
+      </div>
+      <div class="pv-msg" id="pvMsg" role="status" aria-live="polite"></div>
+    </div>
+  </div>
+</dialog>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script id="core">
+// ---- EPUB解析（画面に依存しない部分） ----
+var IMG_RE = /\.(jpe?g|png|gif|webp)$/i;
+
+function normPath(base, href) {
+  href = href.split('#')[0].split('?')[0];
+  try { href = decodeURIComponent(href); } catch (e) {}
+  var parts = (href.charAt(0) === '/' ? href.slice(1) : (base ? base + '/' + href : href)).split('/');
+  var out = [];
+  parts.forEach(function (p) {
+    if (p === '..') out.pop(); else if (p !== '.' && p !== '') out.push(p);
+  });
+  return out.join('/');
+}
+function dirOf(p) { var i = p.lastIndexOf('/'); return i < 0 ? '' : p.slice(0, i); }
+function attr(tag, name) {
+  var m = new RegExp('(?:^|\\s)' + name + '\\s*=\\s*(?:"([^"]*)"|\'([^\']*)\')', 'i').exec(tag);
+  return m ? (m[1] !== undefined ? m[1] : m[2]).replace(/&amp;/g, '&') : null;
+}
+
+// JPEG/PNGのヘッダーから寸法だけ読む
+function imageSize(u8) {
+  if (u8.length > 24 && u8[0] === 0x89 && u8[1] === 0x50) {
+    return { w: (u8[16] << 24 | u8[17] << 16 | u8[18] << 8 | u8[19]) >>> 0, h: (u8[20] << 24 | u8[21] << 16 | u8[22] << 8 | u8[23]) >>> 0 };
+  }
+  if (u8[0] === 0xFF && u8[1] === 0xD8) {
+    var i = 2;
+    while (i + 9 < u8.length) {
+      if (u8[i] !== 0xFF) { i++; continue; }
+      var m = u8[i + 1];
+      if (m === 0xFF) { i++; continue; }
+      if (m >= 0xC0 && m <= 0xCF && m !== 0xC4 && m !== 0xC8 && m !== 0xCC) {
+        return { h: u8[i + 5] << 8 | u8[i + 6], w: u8[i + 7] << 8 | u8[i + 8] };
+      }
+      if (m === 0xD8 || m === 0x01 || (m >= 0xD0 && m <= 0xD7)) { i += 2; continue; }
+      i += 2 + (u8[i + 2] << 8 | u8[i + 3]);
+    }
+  }
+  return null;
+}
+
+// 戻り値: { title, ordered: [{path, name, blob, size, w, h, inSpine}], warning }
+async function readEpub(data, onProgress) {
+  var zip = await JSZip.loadAsync(data);
+  var byLower = {};
+  Object.keys(zip.files).forEach(function (k) { if (!zip.files[k].dir) byLower[k.toLowerCase()] = k; });
+  function find(p) { return zip.files[p] && !zip.files[p].dir ? p : byLower[p.toLowerCase()] || null; }
+
+  var order = [], seen = {}, title = '', warning = '';
+  function push(p, inSpine) {
+    var real = find(p);
+    if (real && IMG_RE.test(real) && !seen[real]) { seen[real] = 1; order.push({ path: real, inSpine: inSpine }); }
+  }
+
+  try {
+    var cPath = find('META-INF/container.xml');
+    var container = await zip.file(cPath).async('string');
+    var opfPath = find(attr(/<rootfile\b[^>]*>/i.exec(container)[0], 'full-path'));
+    var opf = await zip.file(opfPath).async('string');
+    var opfDir = dirOf(opfPath);
+    var t = /<dc:title[^>]*>([\s\S]*?)<\/dc:title>/i.exec(opf);
+    if (t) title = t[1].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').trim();
+
+    var manifest = {};
+    (opf.match(/<item\b[^>]*>/gi) || []).forEach(function (tag) {
+      var id = attr(tag, 'id'), href = attr(tag, 'href');
+      if (id && href) manifest[id] = normPath(opfDir, href);
+    });
+    var spine = (opf.match(/<itemref\b[^>]*>/gi) || []).map(function (tag) { return manifest[attr(tag, 'idref')]; }).filter(Boolean);
+
+    for (var i = 0; i < spine.length; i++) {
+      var docPath = find(spine[i]);
+      if (!docPath) continue;
+      if (IMG_RE.test(docPath)) { push(docPath, true); continue; }
+      var doc = await zip.file(docPath).async('string');
+      var dDir = dirOf(docPath), re = /(?:src|href)\s*=\s*(?:"([^"]+)"|'([^']+)')/gi, m;
+      while ((m = re.exec(doc))) {
+        var ref = (m[1] || m[2]).replace(/&amp;/g, '&');
+        if (/^(https?:|data:)/i.test(ref)) continue;
+        var p = normPath(dDir, ref);
+        if (IMG_RE.test(p)) push(p, true);
+      }
+    }
+  } catch (e) {
+    warning = '綴じ順の情報を読めなかったため、ファイル名順に並べています。';
+  }
+
+  // 本文から参照されていない画像は末尾にファイル名順で足す
+  Object.keys(zip.files).filter(function (k) { return !zip.files[k].dir && IMG_RE.test(k); }).sort().forEach(function (k) { push(k, false); });
+
+  for (var j = 0; j < order.length; j++) {
+    var o = order[j];
+    var buf = await zip.file(o.path).async('uint8array');
+    var ext = o.path.split('.').pop().toLowerCase();
+    var s = imageSize(buf);
+    o.name = o.path.split('/').pop();
+    o.ext = ext === 'jpeg' ? 'jpg' : ext;
+    o.size = buf.length;
+    o.w = s ? s.w : 0; o.h = s ? s.h : 0;
+    o.bytes = buf;
+    if (onProgress) onProgress(j + 1, order.length);
+  }
+  return { title: title, ordered: order, warning: warning };
+}
+
+// 白い余白の幅を測る。px=RGBA配列。戻り値 {top,bottom,left,right}（px）。真っ白なページは null
+// ignoreSmall: ページ番号のような幅の小さいものは余白扱いにする
+function findMargins(px, w, h, ignoreSmall) {
+  function ink(i) { return (px[i] * 299 + px[i + 1] * 587 + px[i + 2] * 114) / 1000 < 200; }
+  var rowThr = Math.max(2, Math.round(w * (ignoreSmall ? 0.06 : 0.004)));
+  function rowHas(y) { var c = 0, i = y * w * 4; for (var x = 0; x < w; x++, i += 4) { if (ink(i) && ++c > rowThr) return true; } return false; }
+  var top = 0; while (top < h && !rowHas(top)) top++;
+  if (top >= h) return null;
+  var bot = h - 1; while (bot > top && !rowHas(bot)) bot--;
+  var colThr = Math.max(2, Math.round((bot - top + 1) * (ignoreSmall ? 0.03 : 0.004)));
+  function colHas(x) { var c = 0; for (var y = top; y <= bot; y++) { if (ink((y * w + x) * 4) && ++c > colThr) return true; } return false; }
+  var left = 0; while (left < w && !colHas(left)) left++;
+  if (left >= w) return null;
+  var right = w - 1; while (right > left && !colHas(right)) right--;
+  return { top: top, bottom: h - 1 - bot, left: left, right: w - 1 - right };
+}
+
+// 本全体の切り方を決める。pages=[{w,h,m}]（m=findMarginsの結果、未計測は undefined）
+// いちばん多い寸法のページの余白のうち狭め（下から15%）の幅を「標準の余白」とし（スキャンのずれで寸法がばらつかないように）、各ページはそれを上限に切る。
+// 絵が余白にはみ出すページは絵の手前まで、断ち切りページは切らない。戻り値は各ページの {x,y,w,h} か null
+function planTrim(pages, sides) {
+  var cnt = {}, best = '';
+  pages.forEach(function (p) { var k = p.w + 'x' + p.h; cnt[k] = (cnt[k] || 0) + 1; if (!best || cnt[k] > cnt[best]) best = k; });
+  var main = pages.filter(function (p) { return p.w + 'x' + p.h === best && p.m; });
+  function med(key) { var a = main.map(function (p) { return p.m[key]; }).sort(function (x, y) { return x - y; }); if (!a.length) return 0; var mid = a[Math.floor((a.length - 1) / 2)]; a = a.filter(function (v) { return v >= mid * 0.5; }); return a[Math.floor((a.length - 1) * 0.15)]; }
+  var std = { top: med('top'), bottom: med('bottom'), left: med('left'), right: med('right') };
+  return pages.map(function (p) {
+    if (p.w + 'x' + p.h !== best || p.m === undefined) return null;
+    var pad = Math.round(p.h * 0.004), m = p.m || std;
+    function cut(key) { return Math.max(0, Math.min(std[key], m[key]) - pad); }
+    var t = cut('top'), b = cut('bottom'), l = sides ? cut('left') : 0, r = sides ? cut('right') : 0;
+    if (t + b < 3 && l + r < 3) return null;
+    return { x: l, y: t, w: p.w - l - r, h: p.h - t - b };
+  });
+}
+
+// 保存名の一覧を作る（連番 or 元の名前、重複は連番を付けて回避）
+function outputNames(items, mode) {
+  var digits = Math.max(3, String(items.length).length), used = {};
+  return items.map(function (it, i) {
+    var n = mode === 'seq' ? String(i + 1).padStart(digits, '0') + '.' + it.ext : it.name;
+    if (used[n.toLowerCase()]) { var d = n.lastIndexOf('.'); n = n.slice(0, d) + '_' + (i + 1) + n.slice(d); }
+    used[n.toLowerCase()] = 1;
+    return n;
+  });
+}
+</script>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var drop = $('drop'), fileInput = $('file'), status = $('status'), booksEl = $('books');
+  var naming = $('naming'), onlyJpg = $('onlyjpg'), trim = $('trim'), ignoreSmall = $('ignoresmall');
+  var books = [];
+  var PAGE = 60;
+  var MIME = { jpg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp' };
+
+  try { var saved = localStorage.getItem('epubjpg.naming'); if (saved) naming.value = saved; } catch (e) {}
+
+  var dlPromise = (window.claude && window.claude.use) ? window.claude.use('downloads').catch(function () { return null; }) : Promise.resolve(null);
+
+  var framed = true; try { framed = window.self !== window.top; } catch (e) {}
+  dlPromise.then(function (dl) { if (!dl && framed) $('nosave').hidden = false; });
+
+  async function saveFile(filename, blob) {
+    var dl = await dlPromise;
+    if (dl) {
+      try { await dl.save({ filename: filename, data: blob }); return '保存しました：' + filename + '　→ ブラウザの「ダウンロード」フォルダに入っています。'; }
+      catch (e) {
+        if (e && e.code === 'declined') return '保存を取りやめました。';
+        if (e && e.code === 'rate_limited') return '保存の確認が開いたままです。先にそちらを閉じてから、もう一度押してください。';
+        if (e && e.code === 'too_large') return 'ファイルが大きすぎて、この画面からは保存できません。パソコンのブラウザで開き直してください。';
+        return 'この画面では保存できませんでした。パソコンのブラウザで開き直してください。';
+      }
+    }
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 60000);
+    if (framed) return 'この表示では保存できません。配布している「EPUB画像とりだし」のHTMLファイル版を使ってください。';
+    return '保存を開始しました：' + filename + '　→ ブラウザの「ダウンロード」フォルダに入ります。';
+  }
+
+  async function decode(bytes, ext) {
+    var bmp = await createImageBitmap(new Blob([bytes], { type: MIME[ext] }));
+    var c = document.createElement('canvas'); c.width = bmp.width; c.height = bmp.height;
+    var ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(bmp, 0, 0); if (bmp.close) bmp.close();
+    return { c: c, ctx: ctx };
+  }
+
+  async function applyTrim(book) {
+    var mode = trim.value, small = ignoreSmall.checked, mKey = small ? 'mS' : 'mN', key = mode + (small ? '1' : '0');
+    var items = book.items, n = items.length, i, it;
+    for (i = 0; i < n; i++) { it = items[i]; if (!it.orig) it.orig = { bytes: it.bytes, w: it.w, h: it.h, size: it.size }; }
+    var plan = [];
+    if (mode !== 'none') {
+      for (i = 0; i < n; i++) {
+        it = items[i];
+        if (!(mKey in it) && (it.ext === 'jpg' || it.ext === 'png')) {
+          try { var d = await decode(it.orig.bytes, it.ext); it[mKey] = findMargins(d.ctx.getImageData(0, 0, d.c.width, d.c.height).data, d.c.width, d.c.height, small); it.orig.w = d.c.width; it.orig.h = d.c.height; }
+          catch (e) { console.error(e); }
+        }
+        if (i % 5 === 4 || i === n - 1) say(book.fileName + ' の余白を測っています… ' + (i + 1) + '/' + n + '枚');
+      }
+      plan = planTrim(items.map(function (it) { return { w: it.orig.w, h: it.orig.h, m: it[mKey] }; }), mode === 'all');
+    }
+    for (i = 0; i < n; i++) {
+      it = items[i];
+      var r = plan[i] || null;
+      it.autoRect = r;
+      if (it.manual) r = (it.manual.w >= it.orig.w && it.manual.h >= it.orig.h) ? null : it.manual;
+      var rKey = r ? [r.x, r.y, r.w, r.h].join(',') : 'none';
+      if ((it.trimKey || 'none') === rKey) continue;
+      var v = it.orig;
+      if (r) {
+        try {
+          var src = await decode(it.orig.bytes, it.ext);
+          var c2 = document.createElement('canvas'); c2.width = r.w; c2.height = r.h;
+          c2.getContext('2d').drawImage(src.c, r.x, r.y, r.w, r.h, 0, 0, r.w, r.h);
+          var blob = await new Promise(function (res) { c2.toBlob(res, MIME[it.ext], 0.92); });
+          var out = new Uint8Array(await blob.arrayBuffer());
+          v = { bytes: out, w: r.w, h: r.h, size: out.length };
+        } catch (e) { console.error(e); r = null; rKey = 'none'; }
+      }
+      it.bytes = v.bytes; it.w = v.w; it.h = v.h; it.size = v.size; it.trimmed = !!r; it.trimKey = rKey;
+      if (it.url) { URL.revokeObjectURL(it.url); it.url = null; }
+      if (mode !== 'none' && (i % 5 === 4 || i === n - 1)) say(book.fileName + ' の余白を切っています… ' + (i + 1) + '/' + n + '枚');
+    }
+  }
+
+  var chain = Promise.resolve();
+  function refreshAll() {
+    chain = chain.then(async function () {
+      for (var i = 0; i < books.length; i++) { await applyTrim(books[i]); renderBook(books[i]); }
+      if (books.length) say(trim.value === 'none' ? 'ページそのままの状態に戻しました。' : '余白を切りました。一覧で仕上がりを確認してから保存してください。');
+    });
+  }
+
+  // ---- プレビューと切る位置の手動調整 ----
+  var pv = $('pv'), pvImg = $('pvImg'), pvCrop = $('pvCrop'), pvState = null, pvUrl = null;
+  var pvIn = { t: $('pvT'), b: $('pvB'), l: $('pvL'), r: $('pvR') };
+  function canCrop(it) { return it.ext === 'jpg' || it.ext === 'png'; }
+  function pvMsg(m) { $('pvMsg').textContent = m || ''; }
+  function pvDraw() {
+    var st = pvState, r = st.r, W = st.W, H = st.H, ok = canCrop(st.it) && W > 0;
+    pvCrop.hidden = !ok; $('pvCut').hidden = !ok; $('pvOne').hidden = !ok; $('pvMany').hidden = !ok; $('pvHelp').hidden = !ok;
+    $('pvTitle').textContent = (st.idx + 1) + ' / ' + st.list.length + '枚　' + (st.it.outName || st.it.name);
+    $('pvPick').checked = !!st.it.sel;
+    $('pvPrev').disabled = st.idx <= 0; $('pvNext').disabled = st.idx >= st.list.length - 1;
+    if (!W) { $('pvDims').textContent = ''; return; }
+    $('pvDims').textContent = '元 ' + W + '×' + H + ' → 仕上がり ' + r.w + '×' + r.h;
+    if (!ok) return;
+    pvCrop.style.left = (r.x / W * 100) + '%'; pvCrop.style.top = (r.y / H * 100) + '%';
+    pvCrop.style.width = (r.w / W * 100) + '%'; pvCrop.style.height = (r.h / H * 100) + '%';
+    pvIn.t.value = r.y; pvIn.b.value = H - r.y - r.h; pvIn.l.value = r.x; pvIn.r.value = W - r.x - r.w;
+  }
+  function pvCommit() { var st = pvState, r = st.r; st.it.manual = { x: r.x, y: r.y, w: r.w, h: r.h }; st.dirty = true; pvMsg(''); pvDraw(); }
+  function pvShow(idx) {
+    var st = pvState; st.idx = idx; var it = st.it = st.list[idx];
+    if (!it.orig) it.orig = { bytes: it.bytes, w: it.w, h: it.h, size: it.size };
+    st.W = it.orig.w; st.H = it.orig.h;
+    st.r = it.manual || it.autoRect || { x: 0, y: 0, w: st.W, h: st.H };
+    st.r = { x: st.r.x, y: st.r.y, w: st.r.w, h: st.r.h };
+    if (pvUrl) URL.revokeObjectURL(pvUrl);
+    pvUrl = URL.createObjectURL(new Blob([it.orig.bytes], { type: MIME[it.ext] }));
+    pvImg.src = pvUrl; pvMsg(''); pvDraw();
+  }
+  pvImg.addEventListener('load', function () {
+    var st = pvState; if (!st || st.W) return;
+    st.W = st.it.orig.w = pvImg.naturalWidth; st.H = st.it.orig.h = pvImg.naturalHeight;
+    st.r = { x: 0, y: 0, w: st.W, h: st.H }; pvDraw();
+  });
+  function pvFlush() {
+    var st = pvState; if (!st || !st.dirty) return chain;
+    st.dirty = false; var book = st.book;
+    chain = chain.then(async function () { await applyTrim(book); if (books.indexOf(book) >= 0) renderBook(book); say('切る位置の調整を反映しました。'); });
+    return chain;
+  }
+  function openPreview(book, list, idx) {
+    pvState = { book: book, list: list, dirty: false };
+    pvShow(idx);
+    if (!pv.open) pv.showModal();
+  }
+  var MIN = 16;
+  Array.prototype.forEach.call(pvCrop.querySelectorAll('span'), function (h) {
+    h.addEventListener('pointerdown', function (e) {
+      e.preventDefault(); h.setPointerCapture(e.pointerId);
+      var edge = h.getAttribute('data-e');
+      function move(ev) {
+        var st = pvState, r = st.r, box = pvImg.getBoundingClientRect();
+        if (!box.width || !box.height) return;
+        var px = Math.round((ev.clientX - box.left) / box.width * st.W), py = Math.round((ev.clientY - box.top) / box.height * st.H);
+        var x2 = r.x + r.w, y2 = r.y + r.h;
+        if (edge === 't') r.y = Math.max(0, Math.min(py, y2 - MIN));
+        if (edge === 'b') y2 = Math.min(st.H, Math.max(py, r.y + MIN));
+        if (edge === 'l') r.x = Math.max(0, Math.min(px, x2 - MIN));
+        if (edge === 'r') x2 = Math.min(st.W, Math.max(px, r.x + MIN));
+        r.w = x2 - r.x; r.h = y2 - r.y; pvDraw();
+      }
+      function up() { h.removeEventListener('pointermove', move); h.removeEventListener('pointerup', up); h.removeEventListener('pointercancel', up); pvCommit(); }
+      h.addEventListener('pointermove', move); h.addEventListener('pointerup', up); h.addEventListener('pointercancel', up);
+    });
+  });
+  Object.keys(pvIn).forEach(function (k) {
+    pvIn[k].addEventListener('change', function () {
+      var st = pvState, W = st.W, H = st.H;
+      function v(key, max) { var n = Math.round(Number(pvIn[key].value)); return Math.max(0, Math.min(isFinite(n) ? n : 0, max)); }
+      var t = v('t', H - MIN), b = Math.min(v('b', H - MIN), H - MIN - t), l = v('l', W - MIN), r = Math.min(v('r', W - MIN), W - MIN - l);
+      st.r = { x: l, y: t, w: W - l - r, h: H - t - b }; pvCommit();
+    });
+  });
+  $('pvAuto').addEventListener('click', function () { var st = pvState; delete st.it.manual; st.dirty = true; var a = st.it.autoRect || { x: 0, y: 0, w: st.W, h: st.H }; st.r = { x: a.x, y: a.y, w: a.w, h: a.h }; pvDraw(); pvMsg('このページを自動の切り方に戻しました。'); });
+  $('pvFull').addEventListener('click', function () { var st = pvState; st.r = { x: 0, y: 0, w: st.W, h: st.H }; pvCommit(); pvMsg('このページは切らずに保存します。'); });
+  $('pvAll').addEventListener('click', function () {
+    var st = pvState, r = st.r, n = 0;
+    st.book.items.forEach(function (it) { if (canCrop(it) && it.orig && it.orig.w === st.W && it.orig.h === st.H) { it.manual = { x: r.x, y: r.y, w: r.w, h: r.h }; n++; } });
+    st.dirty = true; pvMsg('同じ寸法（' + st.W + '×' + st.H + '）の' + n + '枚を、この位置で切るようにしました。');
+  });
+  $('pvAllAuto').addEventListener('click', function () {
+    var st = pvState; st.book.items.forEach(function (it) { delete it.manual; });
+    st.dirty = true; var a = st.it.autoRect || { x: 0, y: 0, w: st.W, h: st.H }; st.r = { x: a.x, y: a.y, w: a.w, h: a.h }; pvDraw(); pvMsg('全ページを自動の切り方に戻しました。');
+  });
+  $('pvPick').addEventListener('change', function () { var st = pvState; st.it.sel = $('pvPick').checked; if (st.book.syncSel) st.book.syncSel(); });
+  $('pvPrev').addEventListener('click', function () { if (pvState.idx > 0) pvShow(pvState.idx - 1); });
+  $('pvNext').addEventListener('click', function () { if (pvState.idx < pvState.list.length - 1) pvShow(pvState.idx + 1); });
+  $('pvSave').addEventListener('click', async function () {
+    var st = pvState, it = st.it; pvMsg('保存の準備中…');
+    await pvFlush();
+    pvMsg(await saveFile(it.outName || it.name, new Blob([it.bytes], { type: MIME[it.ext] })));
+  });
+  $('pvClose').addEventListener('click', function () { pvFlush(); pv.close(); });
+  pv.addEventListener('close', function () { pvFlush(); if (pvUrl) { URL.revokeObjectURL(pvUrl); pvUrl = null; } });
+  pv.addEventListener('keydown', function (e) {
+    if (e.target && e.target.tagName === 'INPUT') return;
+    if (e.key === 'ArrowLeft') $('pvNext').click(); else if (e.key === 'ArrowRight') $('pvPrev').click();
+  });
+
+  function fmtSize(n) { return n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB'; }
+  function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+  function say(msg, isErr) { status.textContent = msg; status.className = 'status' + (isErr ? ' err' : ''); }
+
+  function visibleItems(book) { return onlyJpg.checked ? book.items.filter(function (it) { return it.ext === 'jpg'; }) : book.items; }
+
+  function renderBook(book) {
+    var items = visibleItems(book), names = outputNames(items, naming.value);
+    var root = book.el; root.textContent = '';
+
+    var head = el('div', 'book-head');
+    head.appendChild(el('h2', '', book.title));
+    var actions = el('div', 'book-actions');
+    book.items.forEach(function (it) { it.cb = null; it.cell = null; });
+    var suffix = trim.value === 'none' ? '' : '_余白カット';
+    async function saveSet(idxs, label, btn) {
+      btn.disabled = true;
+      try {
+        if (idxs.length === 1) {
+          var one = items[idxs[0]];
+          say(await saveFile(names[idxs[0]], new Blob([one.bytes], { type: MIME[one.ext] })));
+        } else {
+          var out = new JSZip();
+          idxs.forEach(function (i) { out.file(names[i], items[i].bytes, { binary: true }); });
+          var blob = await out.generateAsync({ type: 'blob', compression: 'STORE' }, function (m) { say('ZIPを作成中… ' + Math.round(m.percent) + '%'); });
+          say(await saveFile(book.base + '_' + label + idxs.length + '枚' + suffix + '.zip', blob));
+        }
+      } catch (e) { say('ZIPを作れませんでした。ページを再読み込みして、もう一度試してください。', true); }
+      book.syncSel();
+    }
+    function picked() { var a = []; items.forEach(function (it, i) { if (it.sel) a.push(i); }); return a; }
+    var selBtn = el('button', '', '');
+    selBtn.addEventListener('click', function () { saveSet(picked(), '選択', selBtn); });
+    var zipBtn = el('button', '', '全' + items.length + '枚をZIPで保存');
+    zipBtn.addEventListener('click', function () { saveSet(items.map(function (it, i) { return i; }), '画像', zipBtn); });
+    var selInfo = el('span', '', '');
+    book.syncSel = function () {
+      var n = picked().length;
+      selBtn.textContent = n === 1 ? '選んだ1枚を保存' : '選んだ' + n + '枚をZIPで保存';
+      selBtn.disabled = !n; zipBtn.disabled = !items.length;
+      zipBtn.className = n ? 'ghost' : '';
+      selInfo.textContent = n ? n + '枚を選択中' : 'コマ左上のチェックで、保存したいページだけ選べます。Shiftを押しながらチェックすると、間のページもまとめて選べます。';
+      items.forEach(function (it) { if (it.cb) it.cb.checked = !!it.sel; if (it.cell) it.cell.className = 'cell' + (it.sel ? ' on' : ''); });
+    };
+    var closeBtn = el('button', 'ghost', '閉じる');
+    closeBtn.addEventListener('click', function () {
+      book.urls.forEach(function (u) { URL.revokeObjectURL(u); });
+      books.splice(books.indexOf(book), 1); root.remove();
+    });
+    actions.appendChild(selBtn); actions.appendChild(zipBtn); actions.appendChild(closeBtn);
+    head.appendChild(actions); root.appendChild(head);
+
+    var total = items.reduce(function (s, it) { return s + it.size; }, 0);
+    var dims = {};
+    items.forEach(function (it) { if (it.w) { var k = it.w + '×' + it.h; dims[k] = (dims[k] || 0) + 1; } });
+    var dimKeys = Object.keys(dims).sort(function (a, b) { return dims[b] - dims[a]; });
+    var dimText = dimKeys.slice(0, 3).map(function (k) { return k + '（' + dims[k] + '枚）'; }).join('、') + (dimKeys.length > 3 ? ' ほか' + (dimKeys.length - 3) + '種' : '');
+    var facts = el('dl', 'facts');
+    var factRows = [['元ファイル', book.fileName], ['枚数', items.length + '枚'], ['合計', fmtSize(total)], ['寸法(px)', dimText || '不明']];
+    if (trim.value !== 'none') factRows.push(['余白を切った枚数', items.filter(function (it) { return it.trimmed; }).length + '枚']);
+    factRows.forEach(function (f) {
+      var d = el('div'); d.appendChild(el('dt', '', f[0])); d.appendChild(el('dd', '', f[1])); facts.appendChild(d);
+    });
+    root.appendChild(facts);
+
+    var loose = items.filter(function (it) { return !it.inSpine; }).length;
+    if (book.warning) root.appendChild(el('div', 'note', book.warning));
+    else if (loose) root.appendChild(el('div', 'note', '本文から使われていない画像が' + loose + '枚あります。読む順の後ろにファイル名順で並べています。'));
+    if (dimKeys.length > 1 && trim.value === 'none') root.appendChild(el('div', 'note', '寸法のちがう画像が混ざっています（' + dimKeys.length + '種類）。'));
+
+    var selbar = el('div', 'selbar');
+    var allBtn = el('button', 'ghost', 'すべて選ぶ'), noneBtn = el('button', 'ghost', '選択を外す');
+    allBtn.addEventListener('click', function () { items.forEach(function (it) { it.sel = true; }); book.syncSel(); });
+    noneBtn.addEventListener('click', function () { book.items.forEach(function (it) { it.sel = false; }); book.syncSel(); });
+    selbar.appendChild(allBtn); selbar.appendChild(noneBtn); selbar.appendChild(selInfo); root.appendChild(selbar);
+    var lastPick = null;
+
+    var grid = el('div', 'grid'); root.appendChild(grid);
+    var shown = 0, moreBtn = el('button', 'ghost more');
+    function addMore() {
+      var end = Math.min(items.length, shown + PAGE);
+      for (var i = shown; i < end; i++) (function (it, name, idx) {
+        var b = el('button', 'thumb'); b.type = 'button'; b.title = name + ' のプレビューを開く（元：' + it.path + '）'; it.outName = name;
+        var pic = el('span', 'pic'), img = document.createElement('img');
+        if (!it.url) { it.url = URL.createObjectURL(new Blob([it.bytes], { type: MIME[it.ext] })); book.urls.push(it.url); }
+        img.loading = 'lazy'; img.decoding = 'async'; img.alt = (idx + 1) + '枚目'; img.src = it.url;
+        pic.appendChild(img); b.appendChild(pic);
+        var cap = el('span', 'cap'); cap.appendChild(el('b', '', name));
+        cap.appendChild(el('span', '', (it.w ? it.w + '×' + it.h + ' ' : '') + fmtSize(it.size)));
+        b.appendChild(cap);
+        b.addEventListener('click', function () { openPreview(book, items, idx); });
+        var cell = el('div', 'cell'), pick = el('label', 'pick'), cb = document.createElement('input');
+        cb.type = 'checkbox'; cb.setAttribute('aria-label', name + ' を選ぶ'); pick.title = '選ぶ（Shiftで範囲選択）';
+        cb.addEventListener('click', function (e) {
+          var on = cb.checked;
+          if (e.shiftKey && lastPick !== null) { for (var k = Math.min(lastPick, idx); k <= Math.max(lastPick, idx); k++) items[k].sel = on; }
+          else it.sel = on;
+          lastPick = idx; book.syncSel();
+        });
+        pick.appendChild(cb); cell.appendChild(b); cell.appendChild(pick);
+        it.cb = cb; it.cell = cell; cb.checked = !!it.sel; if (it.sel) cell.className = 'cell on';
+        grid.appendChild(cell);
+      })(items[i], names[i], i);
+      shown = end; book.shown = shown;
+      moreBtn.hidden = shown >= items.length;
+      moreBtn.textContent = '続きを表示（残り' + (items.length - shown) + '枚）';
+    }
+    moreBtn.addEventListener('click', addMore);
+    root.appendChild(moreBtn);
+    var want = Math.min(items.length, Math.max(PAGE, book.shown || 0));
+    do { addMore(); } while (shown < want);
+    book.syncSel();
+  }
+
+  async function handle(files) {
+    var list = Array.prototype.filter.call(files, function (f) { return /\.epub$/i.test(f.name); });
+    if (!list.length) { say('EPUBファイル（.epub）を入れてください。', true); return; }
+    if (typeof JSZip === 'undefined') { say('読み込みに必要な部品を取得できませんでした。ネット接続を確認して再読み込みしてください。', true); return; }
+    var failed = [], unreadable = [];
+    for (var i = 0; i < list.length; i++) {
+      var f = list[i], label = (list.length > 1 ? '（' + (i + 1) + '/' + list.length + '）' : '');
+      say(f.name + ' を読み込み中…' + label);
+      var data;
+      try { data = await f.arrayBuffer(); }
+      catch (e) { console.error(e); unreadable.push(f.name); continue; }
+      try {
+        var res = await readEpub(data,function (n, t) { if (n % 10 === 0 || n === t) say(f.name + ' から取り出し中… ' + n + '/' + t + '枚' + label); });
+        if (!res.ordered.length) { failed.push(f.name + '（画像なし）'); continue; }
+        var base = f.name.replace(/\.epub$/i, '');
+        var book = { fileName: f.name, base: base, title: res.title || base, items: res.ordered, warning: res.warning, urls: [], el: el('section', 'book') };
+        books.unshift(book); booksEl.insertBefore(book.el, booksEl.firstChild);
+        if (trim.value !== 'none') await applyTrim(book);
+        renderBook(book);
+      } catch (e) { console.error(e); failed.push(f.name + '［' + ((e && (e.name + ': ' + e.message)) || e) + '］'); }
+    }
+    if (unreadable.length) say('ファイルを開けませんでした：' + unreadable.join('、') + '。Googleドライブ上のファイルは、この端末にダウンロードされていないと読めません。Googleドライブのアプリが動いているか確認するか、ブラウザ版ドライブからダウンロードしたファイルを入れてください。' + (failed.length ? '／中身を読めなかったファイル：' + failed.join('、') : ''), true);
+    else if (failed.length) say('読めなかったファイル：' + failed.join('、') + '。EPUBが壊れていないか確認してください。', true);
+    else say((list.length - failed.length) + '冊を取り出しました。「ZIPで保存」でまとめて保存できます。');
+  }
+
+  fileInput.addEventListener('change', function () { handle(fileInput.files); fileInput.value = ''; });
+  ['dragenter', 'dragover'].forEach(function (t) { drop.addEventListener(t, function (e) { e.preventDefault(); drop.classList.add('over'); }); });
+  ['dragleave', 'drop'].forEach(function (t) { drop.addEventListener(t, function (e) { e.preventDefault(); drop.classList.remove('over'); }); });
+  drop.addEventListener('drop', function (e) { handle(e.dataTransfer.files); });
+  window.addEventListener('dragover', function (e) { e.preventDefault(); });
+  window.addEventListener('drop', function (e) { e.preventDefault(); });
+  naming.addEventListener('change', function () { try { localStorage.setItem('epubjpg.naming', naming.value); } catch (e) {} books.forEach(renderBook); });
+  onlyJpg.addEventListener('change', function () { books.forEach(renderBook); });
+  trim.addEventListener('change', refreshAll);
+  ignoreSmall.addEventListener('change', function () { if (trim.value !== 'none') refreshAll(); });
+})();
+</script>
+
+</body>
+</html>
